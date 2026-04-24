@@ -1,3 +1,4 @@
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
@@ -35,9 +36,12 @@ class SwallowLabeler(tk.Tk):
             self.destroy()
             return
 
+        self.video_path = video_path
         self.current_frame = 0
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f">>> Loaded {os.path.basename(video_path)} at {self.fps:.3f} FPS. "
+              f"1 frame = {1 / self.fps:.4f} seconds.")
         self.events = []
         self.swallow_events = []
         self.is_logging_swallow = False
@@ -381,7 +385,8 @@ class SwallowLabeler(tk.Tk):
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Event_ID", "Start_Frame", "Stop_Frame",
-                             "Start_Time_Sec", "Stop_Time_Sec", "Duration_Sec"])
+                             "Start_Time_Sec", "Stop_Time_Sec", "Duration_Sec", "Video_Source"])
+            source = os.path.basename(self.video_path)
             for s in completed:
                 duration = (s["stop_frame"] - s["start_frame"]) / self.fps
                 writer.writerow([
@@ -391,6 +396,7 @@ class SwallowLabeler(tk.Tk):
                     round(s["start_time"], 4),
                     round(s["stop_time"], 4),
                     round(duration, 4),
+                    source,
                 ])
 
         messagebox.showinfo("Saved", f"Data saved successfully to {path}")
@@ -501,7 +507,6 @@ class SwallowLabeler(tk.Tk):
 
 
 if __name__ == "__main__":
-    import os
     video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.MOV")
     app = SwallowLabeler(video_path)
     app.geometry("1100x700")
