@@ -4,11 +4,30 @@ import csv
 import cv2
 from PIL import Image, ImageTk
 
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG        = "#f0f0f0"   # window / panel background
+BG_DARK   = "#e1e1e1"   # button, scrubber, tick strip
+BG_HOVER  = "#c8c8c8"   # button hover
+FG        = "#111111"   # primary text
+FG_DIM    = "#555555"   # subdued text / controls button
+SEP       = "#cccccc"   # trough / divider
+GREEN     = "#228B22"   # START tick + complete row fg
+RED       = "#cc2222"   # STOP tick + recording indicator
+AMBER_BG  = "#fff8dc"   # in-progress row background
+AMBER_FG  = "#7a5800"   # in-progress row text
+GREEN_BG  = "#e8f5e9"   # complete row background
+
+
+def _hoverable(btn, normal=BG_DARK, hover=BG_HOVER):
+    btn.bind("<Enter>", lambda _: btn.config(bg=hover))
+    btn.bind("<Leave>", lambda _: btn.config(bg=normal))
+
 
 class SwallowLabeler(tk.Tk):
     def __init__(self, video_path):
         super().__init__()
         self.title("Swallow Labeler")
+        self.configure(bg=BG)
 
         self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
@@ -19,12 +38,13 @@ class SwallowLabeler(tk.Tk):
         self.current_frame = 0
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.events = []          # flat list used by tick canvas and CSV export
-        self.swallow_events = []  # paired start/stop records for the Treeview
+        self.events = []
+        self.swallow_events = []
         self.is_logging_swallow = False
         self._scrubber_sync = False
         self.is_playing = False
         self.play_job = None
+        self.playback_speed = 1.0
 
         self._build_styles()
         self._build_sidebar()
@@ -39,25 +59,25 @@ class SwallowLabeler(tk.Tk):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Treeview",
-            background="#2b2b2b", foreground="white",
-            fieldbackground="#2b2b2b", rowheight=22,
+            background="white", foreground=FG,
+            fieldbackground="white", rowheight=22,
             font=("Courier", 10),
         )
         style.configure("Treeview.Heading",
-            background="#1e1e1e", foreground="#aaaaaa",
+            background=BG_DARK, foreground=FG,
             font=("Courier", 10, "bold"),
         )
-        style.map("Treeview", background=[("selected", "#444444")])
+        style.map("Treeview", background=[("selected", SEP)])
 
     def _build_sidebar(self):
-        sidebar = tk.Frame(self, bg="#1e1e1e", width=240)
+        sidebar = tk.Frame(self, bg=BG, width=240)
         sidebar.pack(side=tk.RIGHT, fill=tk.Y)
         sidebar.pack_propagate(False)
 
-        tk.Label(sidebar, text="Swallow Events", bg="#1e1e1e", fg="white",
+        tk.Label(sidebar, text="Swallow Events", bg=BG, fg=FG,
                  font=("Courier", 12, "bold"), pady=8).pack()
 
-        tree_frame = tk.Frame(sidebar, bg="#1e1e1e")
+        tree_frame = tk.Frame(sidebar, bg=BG)
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
         scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
@@ -80,44 +100,35 @@ class SwallowLabeler(tk.Tk):
         self.tree.column("stop", width=62, anchor="center")
         self.tree.column("duration", width=62, anchor="center")
 
-        self.tree.tag_configure("in_progress", background="#3a3000", foreground="#ffdd00")
-        self.tree.tag_configure("complete", background="#1a3a1a", foreground="#00dd66")
+        self.tree.tag_configure("in_progress", background=AMBER_BG, foreground=AMBER_FG)
+        self.tree.tag_configure("complete", background=GREEN_BG, foreground=GREEN)
 
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.on_event_click)
 
-        tk.Button(
-            sidebar, text="Delete Selected Event",
-            command=self.delete_event,
-            bg="#5a1a1a", fg="white", activebackground="#8b0000",
-            font=("Courier", 10), relief=tk.FLAT, pady=6,
-        ).pack(fill=tk.X, padx=8, pady=(6, 2))
-
-        tk.Button(
-            sidebar, text="Export to CSV",
-            command=self.save_to_csv,
-            bg="#1a3a5a", fg="white", activebackground="#1a5a8b",
-            font=("Courier", 10), relief=tk.FLAT, pady=6,
-        ).pack(fill=tk.X, padx=8, pady=(2, 4))
-
-        tk.Button(
-            sidebar, text="? Controls",
-            command=self.show_instructions,
-            bg="#2e2e2e", fg="#aaaaaa", activebackground="#444444",
-            font=("Courier", 10), relief=tk.FLAT, pady=4,
-        ).pack(fill=tk.X, padx=8, pady=(0, 8))
+        for text, cmd in [
+            ("Delete Selected Event", self.delete_event),
+            ("Export to CSV",         self.save_to_csv),
+            ("? Controls",            self.show_instructions),
+        ]:
+            btn = tk.Button(sidebar, text=text, command=cmd,
+                            bg=BG_DARK, fg=FG, activebackground=BG_HOVER,
+                            activeforeground=FG, font=("Courier", 10),
+                            relief=tk.RAISED, pady=5, bd=1)
+            btn.pack(fill=tk.X, padx=8, pady=2)
+            _hoverable(btn)
 
     def _build_main_area(self):
         left_frame = tk.Frame(self, bg="black")
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Pack bottom-to-top so expanding video label fills whatever remains
+        # Pack bottom-to-top
         self.status_label = tk.Label(
-            left_frame, bg="#222222", fg="white", font=("Courier", 11), anchor="w", padx=8
+            left_frame, bg=BG_DARK, fg=FG, font=("Courier", 14), anchor="w", padx=8, pady=6
         )
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.tick_canvas = tk.Canvas(left_frame, height=10, bg="#333333", highlightthickness=0)
+        self.tick_canvas = tk.Canvas(left_frame, height=10, bg=BG_DARK, highlightthickness=0)
         self.tick_canvas.pack(side=tk.BOTTOM, fill=tk.X)
         self.tick_canvas.bind("<Configure>", lambda _: self.redraw_ticks())
 
@@ -125,15 +136,15 @@ class SwallowLabeler(tk.Tk):
             left_frame, orient=tk.HORIZONTAL,
             from_=0, to=self.total_frames - 1,
             showvalue=0, command=self.on_scrub,
-            bg="#333333", troughcolor="#555555",
+            bg=BG_DARK, troughcolor=SEP,
             highlightthickness=0, bd=0, sliderlength=12,
         )
         self.scrubber.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.status_indicator = tk.Label(
             left_frame, text="Status: IDLE",
-            bg="#111111", fg="white", font=("Courier", 11, "bold"),
-            anchor="w", padx=8, pady=3,
+            bg=BG_DARK, fg=FG, font=("Courier", 14, "bold"),
+            anchor="w", padx=8, pady=8,
         )
         self.status_indicator.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -141,17 +152,21 @@ class SwallowLabeler(tk.Tk):
         self.label.pack(fill=tk.BOTH, expand=True)
 
     def _bind_keys(self):
-        self.bind("<Left>",   lambda _: self.step_frame(-1))
-        self.bind("<Right>",  lambda _: self.step_frame(1))
-        self.bind("<comma>",  lambda _: self.step_frame(-int(self.fps)))
-        self.bind("<period>", lambda _: self.step_frame(int(self.fps)))
-        self.bind("s", lambda _: self.log_start())
-        self.bind("S", lambda _: self.log_start())
-        self.bind("d", lambda _: self.log_stop())
-        self.bind("D", lambda _: self.log_stop())
+        self.bind("<Left>",      lambda _: self.step_frame(-1))
+        self.bind("<Right>",     lambda _: self.step_frame(1))
+        self.bind("<comma>",     lambda _: self.step_frame(-int(self.fps)))
+        self.bind("<period>",    lambda _: self.step_frame(int(self.fps)))
+        self.bind("s",           lambda _: self.log_start())
+        self.bind("S",           lambda _: self.log_start())
+        self.bind("d",           lambda _: self.log_stop())
+        self.bind("D",           lambda _: self.log_stop())
         self.bind("<Delete>",    lambda _: self.delete_event())
-        self.bind("<BackSpace>", lambda _: self.delete_event())
-        self.bind("<space>",     lambda _: self.toggle_play())
+        self.bind("<BackSpace>",  lambda _: self.delete_event())
+        self.bind("<space>",      lambda _: self.toggle_play())
+        self.bind("r",            lambda _: self.toggle_speed())
+        self.bind("R",            lambda _: self.toggle_speed())
+        self.bind("<Control-z>",  lambda _: self.undo_last_action())
+        self.bind("<Command-z>",  lambda _: self.undo_last_action())
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -172,7 +187,20 @@ class SwallowLabeler(tk.Tk):
             return
         self.current_frame += 1
         self._show_frame()
-        self.play_job = self.after(int(1000 / self.fps), self.play_loop)
+        self.play_job = self.after(int((1000 / self.fps) / self.playback_speed), self.play_loop)
+
+    def toggle_speed(self):
+        speeds = [1.0, 0.5, 0.25]
+        self.playback_speed = speeds[(speeds.index(self.playback_speed) + 1) % len(speeds)]
+        print(f">>> Playback speed set to {self.playback_speed}x")
+        self._set_status()
+
+    def _set_status(self):
+        speed_tag = "" if self.playback_speed == 1.0 else f"  |  Speed: {self.playback_speed}x"
+        if self.is_logging_swallow:
+            self.status_indicator.config(text=f"● RECORDING SWALLOW{speed_tag}", fg=RED)
+        else:
+            self.status_indicator.config(text=f"Status: IDLE{speed_tag}", fg=FG)
 
     def on_event_click(self, _event):
         selected = self.tree.selection()
@@ -189,8 +217,8 @@ class SwallowLabeler(tk.Tk):
 
     def _flash_tick(self, frame):
         tag = f"START_{frame}"
-        self.tick_canvas.itemconfig(tag, fill="white", width=3)
-        self.after(600, lambda: self.tick_canvas.itemconfig(tag, fill="#00dd66", width=2))
+        self.tick_canvas.itemconfig(tag, fill="black", width=3)
+        self.after(600, lambda: self.tick_canvas.itemconfig(tag, fill=GREEN, width=2))
 
     def step_frame(self, count):
         self.current_frame = max(0, min(self.current_frame + count, self.total_frames - 1))
@@ -233,7 +261,7 @@ class SwallowLabeler(tk.Tk):
             self.toggle_play()
         print(f">>> [START] Frame {self.current_frame} | Time: {timestamp:.3f}s")
         self.draw_tick(self.current_frame, "START")
-        self.status_indicator.config(text="● RECORDING SWALLOW", fg="#ff3333")
+        self._set_status()
         self._blink()
 
     def log_stop(self):
@@ -267,7 +295,43 @@ class SwallowLabeler(tk.Tk):
               f"| Total Duration: {duration:.2f}s")
 
         self.draw_tick(self.current_frame, "STOP")
-        self.status_indicator.config(text="Status: IDLE", fg="white")
+        self._set_status()
+
+    def undo_last_action(self):
+        if not self.swallow_events:
+            print(">>> Nothing to undo.")
+            return
+
+        swallow = self.swallow_events[-1]
+
+        if swallow["stop_frame"] is None:
+            # Open event — remove it entirely
+            self.swallow_events.pop()
+            self.tree.delete(swallow["tree_id"])
+            self.is_logging_swallow = False
+            print(f">>> Undo: removed open Event #{swallow['num']}.")
+        else:
+            # Closed event — re-open it: clear stop, restore in-progress state
+            swallow["stop_frame"] = None
+            swallow["stop_time"] = None
+            self.is_logging_swallow = True
+            self.tree.item(swallow["tree_id"],
+                values=(swallow["num"], self._format_time(swallow["start_time"]), "LOGGING...", "—"),
+                tags=("in_progress",),
+            )
+            self.tree.see(swallow["tree_id"])
+            self._blink()
+            print(f">>> Undo: re-opened Event #{swallow['num']} — waiting for STOP.")
+
+        # Rebuild flat event list and sync timeline
+        self.events = []
+        for s in self.swallow_events:
+            self.events.append({"frame": s["start_frame"], "time": s["start_time"], "type": "START"})
+            if s["stop_frame"] is not None:
+                self.events.append({"frame": s["stop_frame"], "time": s["stop_time"], "type": "STOP"})
+
+        self.redraw_ticks()
+        self._set_status()
 
     def delete_event(self):
         selected = self.tree.selection()
@@ -284,15 +348,12 @@ class SwallowLabeler(tk.Tk):
                                    f"Delete Event #{swallow['num']}? This cannot be undone."):
             return
 
-        # If deleting an in-progress event, reset recording state
         if swallow["stop_frame"] is None:
             self.is_logging_swallow = False
-            self.status_indicator.config(text="Status: IDLE", fg="white")
 
         self.swallow_events.remove(swallow)
         self.tree.delete(tree_id)
 
-        # Rebuild flat events list from remaining swallow_events
         self.events = []
         for s in self.swallow_events:
             self.events.append({"frame": s["start_frame"], "time": s["start_time"], "type": "START"})
@@ -300,6 +361,7 @@ class SwallowLabeler(tk.Tk):
                 self.events.append({"frame": s["stop_frame"], "time": s["stop_time"], "type": "STOP"})
 
         self.redraw_ticks()
+        self._set_status()
         print(f">>> Event #{swallow['num']} deleted. Remaining events: {len(self.swallow_events)}")
 
     def save_to_csv(self):
@@ -338,7 +400,7 @@ class SwallowLabeler(tk.Tk):
         if not self.is_logging_swallow:
             return
         current_fg = self.status_indicator.cget("fg")
-        self.status_indicator.config(fg="#ff3333" if current_fg == "#111111" else "#111111")
+        self.status_indicator.config(fg=RED if current_fg == BG_DARK else BG_DARK)
         self.after(500, self._blink)
 
     # ── Tick Canvas ───────────────────────────────────────────────────────────
@@ -348,7 +410,7 @@ class SwallowLabeler(tk.Tk):
         if canvas_w <= 1:
             return
         x = (frame / max(self.total_frames - 1, 1)) * canvas_w
-        color = "#00dd66" if event_type == "START" else "#ff5555"
+        color = GREEN if event_type == "START" else RED
         self.tick_canvas.create_line(x, 0, x, 10, fill=color, width=2, tags=f"{event_type}_{frame}")
 
     def redraw_ticks(self):
@@ -397,38 +459,41 @@ class SwallowLabeler(tk.Tk):
     def show_instructions(self):
         win = tk.Toplevel(self)
         win.title("Keyboard Shortcuts")
-        win.geometry("300x370")
+        win.geometry("320x450")
         win.resizable(False, False)
-        win.configure(bg="#1e1e1e")
+        win.configure(bg=BG)
 
-        tk.Label(win, text="Controls", bg="#1e1e1e", fg="white",
+        tk.Label(win, text="Controls", bg=BG, fg=FG,
                  font=("Courier", 13, "bold"), pady=12).pack()
 
         controls = [
-            ("Space",        "Play / Pause"),
-            ("→ / ←",        "Step ±1 frame"),
-            (". / ,",        "Skip ±1 second"),
-            ("S",            "Mark START of swallow"),
-            ("D",            "Mark STOP of swallow"),
-            ("Click sidebar","Jump to event"),
-            ("Delete",       "Remove selected event"),
+            ("Space",         "Play / Pause"),
+            ("→  /  ←",       "Step ±1 frame"),
+            (".  /  ,",       "Skip ±1 second"),
+            ("S",             "Mark START of swallow"),
+            ("D",             "Mark STOP of swallow"),
+            ("Click sidebar", "Jump to event"),
+            ("Delete",        "Remove selected event"),
+            ("Ctrl+Z",        "Undo last mark"),
+            ("R",             "Toggle speed 1x→0.5x→0.25x"),
         ]
 
-        frame = tk.Frame(win, bg="#1e1e1e", padx=16)
+        frame = tk.Frame(win, bg=BG, padx=16)
         frame.pack(fill=tk.X)
 
         for key, desc in controls:
-            row = tk.Frame(frame, bg="#1e1e1e", pady=4)
+            row = tk.Frame(frame, bg=BG, pady=4)
             row.pack(fill=tk.X)
-            tk.Label(row, text=f"{key:<14}", bg="#1e1e1e", fg="#ffdd66",
+            tk.Label(row, text=f"{key:<14}", bg=BG, fg="#8b6914",
                      font=("Courier", 11), anchor="w", width=14).pack(side=tk.LEFT)
-            tk.Label(row, text=desc, bg="#1e1e1e", fg="#cccccc",
+            tk.Label(row, text=desc, bg=BG, fg=FG,
                      font=("Courier", 11), anchor="w").pack(side=tk.LEFT)
 
-        tk.Button(win, text="Close", command=win.destroy,
-                  bg="#333333", fg="white", activebackground="#555555",
-                  font=("Courier", 10), relief=tk.FLAT, pady=6,
-                  ).pack(fill=tk.X, padx=16, pady=16)
+        close_btn = tk.Button(win, text="Close", command=win.destroy,
+                              bg=BG_DARK, fg=FG, activebackground=BG_HOVER,
+                              font=("Courier", 10), relief=tk.RAISED, bd=1, pady=6)
+        close_btn.pack(fill=tk.X, padx=16, pady=16)
+        _hoverable(close_btn)
 
     def __del__(self):
         if hasattr(self, "cap"):
