@@ -1,5 +1,6 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+import csv
 import cv2
 from PIL import Image, ImageTk
 
@@ -81,6 +82,21 @@ class SwallowLabeler(tk.Tk):
         self.tree.tag_configure("complete", background="#1a3a1a", foreground="#00dd66")
 
         self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self.on_event_click)
+
+        tk.Button(
+            sidebar, text="Delete Selected Event",
+            command=self.delete_event,
+            bg="#5a1a1a", fg="white", activebackground="#8b0000",
+            font=("Courier", 10), relief=tk.FLAT, pady=6,
+        ).pack(fill=tk.X, padx=8, pady=(6, 2))
+
+        tk.Button(
+            sidebar, text="Export to CSV",
+            command=self.save_to_csv,
+            bg="#1a3a5a", fg="white", activebackground="#1a5a8b",
+            font=("Courier", 10), relief=tk.FLAT, pady=6,
+        ).pack(fill=tk.X, padx=8, pady=(2, 8))
 
     def _build_main_area(self):
         left_frame = tk.Frame(self, bg="black")
@@ -124,8 +140,28 @@ class SwallowLabeler(tk.Tk):
         self.bind("S", lambda _: self.log_start())
         self.bind("d", lambda _: self.log_stop())
         self.bind("D", lambda _: self.log_stop())
+        self.bind("<Delete>",    lambda _: self.delete_event())
+        self.bind("<BackSpace>", lambda _: self.delete_event())
 
     # ── Navigation ────────────────────────────────────────────────────────────
+
+    def on_event_click(self, _event):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        tree_id = selected[0]
+        swallow = next((e for e in self.swallow_events if e.get("tree_id") == tree_id), None)
+        if swallow is None:
+            return
+        self.current_frame = swallow["start_frame"]
+        self._show_frame()
+        print(f">>> Jumping to Event #{swallow['num']} (Frame: {swallow['start_frame']})")
+        self._flash_tick(swallow["start_frame"])
+
+    def _flash_tick(self, frame):
+        tag = f"START_{frame}"
+        self.tick_canvas.itemconfig(tag, fill="white", width=3)
+        self.after(600, lambda: self.tick_canvas.itemconfig(tag, fill="#00dd66", width=2))
 
     def step_frame(self, count):
         self.current_frame = max(0, min(self.current_frame + count, self.total_frames - 1))
@@ -199,6 +235,71 @@ class SwallowLabeler(tk.Tk):
 
         self.draw_tick(self.current_frame, "STOP")
         self.status_indicator.config(text="Status: IDLE", fg="white")
+
+    def delete_event(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select an event in the sidebar first.")
+            return
+
+        tree_id = selected[0]
+        swallow = next((e for e in self.swallow_events if e.get("tree_id") == tree_id), None)
+        if swallow is None:
+            return
+
+        if not messagebox.askyesno("Confirm Delete",
+                                   f"Delete Event #{swallow['num']}? This cannot be undone."):
+            return
+
+        # If deleting an in-progress event, reset recording state
+        if swallow["stop_frame"] is None:
+            self.is_logging_swallow = False
+            self.status_indicator.config(text="Status: IDLE", fg="white")
+
+        self.swallow_events.remove(swallow)
+        self.tree.delete(tree_id)
+
+        # Rebuild flat events list from remaining swallow_events
+        self.events = []
+        for s in self.swallow_events:
+            self.events.append({"frame": s["start_frame"], "time": s["start_time"], "type": "START"})
+            if s["stop_frame"] is not None:
+                self.events.append({"frame": s["stop_frame"], "time": s["stop_time"], "type": "STOP"})
+
+        self.redraw_ticks()
+        print(f">>> Event #{swallow['num']} deleted. Remaining events: {len(self.swallow_events)}")
+
+    def save_to_csv(self):
+        completed = [s for s in self.swallow_events if s["stop_frame"] is not None]
+        if not completed:
+            messagebox.showwarning("No Data", "No completed swallow events to export.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Save swallow events",
+        )
+        if not path:
+            return
+
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Event_ID", "Start_Frame", "Stop_Frame",
+                             "Start_Time_Sec", "Stop_Time_Sec", "Duration_Sec"])
+            for s in completed:
+                duration = (s["stop_frame"] - s["start_frame"]) / self.fps
+                writer.writerow([
+                    s["num"],
+                    s["start_frame"],
+                    s["stop_frame"],
+                    round(s["start_time"], 4),
+                    round(s["stop_time"], 4),
+                    round(duration, 4),
+                ])
+
+        messagebox.showinfo("Saved", f"Data saved successfully to {path}")
+        print(f">>> Exported {len(completed)} events to {path}")
 
     def _blink(self):
         if not self.is_logging_swallow:
