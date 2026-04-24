@@ -1,4 +1,5 @@
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
@@ -25,23 +26,17 @@ def _hoverable(btn, normal=BG_DARK, hover=BG_HOVER):
 
 
 class SwallowLabeler(tk.Tk):
-    def __init__(self, video_path):
+    def __init__(self, video_path=None):
         super().__init__()
         self.title("Swallow Labeler")
         self.configure(bg=BG)
 
-        self.cap = cv2.VideoCapture(video_path)
-        if not self.cap.isOpened():
-            messagebox.showerror("Error", f"Cannot open video: {video_path}")
-            self.destroy()
-            return
-
-        self.video_path = video_path
+        # Placeholders — populated by load_video()
+        self.cap = None
+        self.video_path = None
         self.current_frame = 0
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        print(f">>> Loaded {os.path.basename(video_path)} at {self.fps:.3f} FPS. "
-              f"1 frame = {1 / self.fps:.4f} seconds.")
+        self.fps = 30.0
+        self.total_frames = 1
         self.events = []
         self.swallow_events = []
         self.is_logging_swallow = False
@@ -55,7 +50,58 @@ class SwallowLabeler(tk.Tk):
         self._build_main_area()
         self._bind_keys()
 
-        self.after(100, self._show_frame)
+        self.after(100, lambda: self.load_video(video_path))
+
+    # ── Video Loading ─────────────────────────────────────────────────────────
+
+    def load_video(self, path=None):
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="Open Video",
+                filetypes=[("Video files", "*.mov *.mp4 *.avi *.mkv *.MOV"), ("All files", "*.*")],
+            )
+        if not path:
+            if self.cap is None:
+                self.destroy()
+            return
+
+        new_cap = cv2.VideoCapture(path)
+        if not new_cap.isOpened():
+            messagebox.showerror("Error", f"Cannot open video: {path}")
+            return
+
+        if self.cap is not None:
+            self.cap.release()
+
+        self.cap = new_cap
+        self.video_path = path
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Reset session state
+        self.current_frame = 0
+        self.events = []
+        self.swallow_events = []
+        self.is_logging_swallow = False
+        if self.is_playing:
+            self.is_playing = False
+            if self.play_job:
+                self.after_cancel(self.play_job)
+                self.play_job = None
+
+        # Sync UI
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.tick_canvas.delete("all")
+        self.scrubber.config(from_=0, to=self.total_frames - 1)
+        self._scrubber_sync = True
+        self.scrubber.set(0)
+        self._scrubber_sync = False
+        self._set_status()
+        self._show_frame()
+
+        print(f">>> Loaded {os.path.basename(path)} at {self.fps:.3f} FPS. "
+              f"1 frame = {1 / self.fps:.4f} seconds.")
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -77,6 +123,14 @@ class SwallowLabeler(tk.Tk):
         sidebar = tk.Frame(self, bg=BG, width=240)
         sidebar.pack(side=tk.RIGHT, fill=tk.Y)
         sidebar.pack_propagate(False)
+
+        open_btn = tk.Button(sidebar, text="📁  Open Video",
+                             command=self.load_video,
+                             bg=BG_DARK, fg=FG, activebackground=BG_HOVER,
+                             activeforeground=FG, font=("Courier", 10),
+                             relief=tk.RAISED, pady=5, bd=1)
+        open_btn.pack(fill=tk.X, padx=8, pady=(8, 4))
+        _hoverable(open_btn)
 
         tk.Label(sidebar, text="Swallow Events", bg=BG, fg=FG,
                  font=("Courier", 12, "bold"), pady=8).pack()
@@ -427,6 +481,8 @@ class SwallowLabeler(tk.Tk):
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _show_frame(self):
+        if self.cap is None:
+            return
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
         ret, frame = self.cap.read()
         if not ret:
@@ -507,7 +563,7 @@ class SwallowLabeler(tk.Tk):
 
 
 if __name__ == "__main__":
-    video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test.MOV")
-    app = SwallowLabeler(video_path)
+    arg_path = sys.argv[1] if len(sys.argv) > 1 else None
+    app = SwallowLabeler(arg_path)
     app.geometry("1100x700")
     app.mainloop()
