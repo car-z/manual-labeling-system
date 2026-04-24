@@ -10,7 +10,7 @@ Python 3.9+ with the following packages:
 pip install opencv-python pillow
 ```
 
-Tkinter is included with Python on most systems. On macOS, if you see a deprecation warning about the system Tk, install a proper version:
+Tkinter is included with Python on most systems. On macOS, if you see a deprecation warning about the system Tk, install a proper version (I had this issue and had to fix):
 
 ```bash
 brew install python-tk@3.9
