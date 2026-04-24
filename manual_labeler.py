@@ -23,6 +23,8 @@ class SwallowLabeler(tk.Tk):
         self.swallow_events = []  # paired start/stop records for the Treeview
         self.is_logging_swallow = False
         self._scrubber_sync = False
+        self.is_playing = False
+        self.play_job = None
 
         self._build_styles()
         self._build_sidebar()
@@ -96,7 +98,14 @@ class SwallowLabeler(tk.Tk):
             command=self.save_to_csv,
             bg="#1a3a5a", fg="white", activebackground="#1a5a8b",
             font=("Courier", 10), relief=tk.FLAT, pady=6,
-        ).pack(fill=tk.X, padx=8, pady=(2, 8))
+        ).pack(fill=tk.X, padx=8, pady=(2, 4))
+
+        tk.Button(
+            sidebar, text="? Controls",
+            command=self.show_instructions,
+            bg="#2e2e2e", fg="#aaaaaa", activebackground="#444444",
+            font=("Courier", 10), relief=tk.FLAT, pady=4,
+        ).pack(fill=tk.X, padx=8, pady=(0, 8))
 
     def _build_main_area(self):
         left_frame = tk.Frame(self, bg="black")
@@ -142,8 +151,28 @@ class SwallowLabeler(tk.Tk):
         self.bind("D", lambda _: self.log_stop())
         self.bind("<Delete>",    lambda _: self.delete_event())
         self.bind("<BackSpace>", lambda _: self.delete_event())
+        self.bind("<space>",     lambda _: self.toggle_play())
 
     # ── Navigation ────────────────────────────────────────────────────────────
+
+    def toggle_play(self):
+        self.is_playing = not self.is_playing
+        if self.is_playing:
+            self.play_loop()
+        elif self.play_job is not None:
+            self.after_cancel(self.play_job)
+            self.play_job = None
+
+    def play_loop(self):
+        if not self.is_playing:
+            return
+        if self.current_frame >= self.total_frames - 1:
+            self.is_playing = False
+            self.play_job = None
+            return
+        self.current_frame += 1
+        self._show_frame()
+        self.play_job = self.after(int(1000 / self.fps), self.play_loop)
 
     def on_event_click(self, _event):
         selected = self.tree.selection()
@@ -200,6 +229,8 @@ class SwallowLabeler(tk.Tk):
         swallow["tree_id"] = tree_id
         self.tree.see(tree_id)
 
+        if self.is_playing:
+            self.toggle_play()
         print(f">>> [START] Frame {self.current_frame} | Time: {timestamp:.3f}s")
         self.draw_tick(self.current_frame, "START")
         self.status_indicator.config(text="● RECORDING SWALLOW", fg="#ff3333")
@@ -210,6 +241,8 @@ class SwallowLabeler(tk.Tk):
             print("No active swallow — press S to mark START first.")
             return
         self.is_logging_swallow = False
+        if self.is_playing:
+            self.toggle_play()
         timestamp = self.current_frame / self.fps
 
         swallow = self.swallow_events[-1]
@@ -360,6 +393,42 @@ class SwallowLabeler(tk.Tk):
         minutes = int(timestamp // 60)
         seconds = timestamp % 60
         return f"{minutes:02d}:{seconds:05.2f}"
+
+    def show_instructions(self):
+        win = tk.Toplevel(self)
+        win.title("Keyboard Shortcuts")
+        win.geometry("300x370")
+        win.resizable(False, False)
+        win.configure(bg="#1e1e1e")
+
+        tk.Label(win, text="Controls", bg="#1e1e1e", fg="white",
+                 font=("Courier", 13, "bold"), pady=12).pack()
+
+        controls = [
+            ("Space",        "Play / Pause"),
+            ("→ / ←",        "Step ±1 frame"),
+            (". / ,",        "Skip ±1 second"),
+            ("S",            "Mark START of swallow"),
+            ("D",            "Mark STOP of swallow"),
+            ("Click sidebar","Jump to event"),
+            ("Delete",       "Remove selected event"),
+        ]
+
+        frame = tk.Frame(win, bg="#1e1e1e", padx=16)
+        frame.pack(fill=tk.X)
+
+        for key, desc in controls:
+            row = tk.Frame(frame, bg="#1e1e1e", pady=4)
+            row.pack(fill=tk.X)
+            tk.Label(row, text=f"{key:<14}", bg="#1e1e1e", fg="#ffdd66",
+                     font=("Courier", 11), anchor="w", width=14).pack(side=tk.LEFT)
+            tk.Label(row, text=desc, bg="#1e1e1e", fg="#cccccc",
+                     font=("Courier", 11), anchor="w").pack(side=tk.LEFT)
+
+        tk.Button(win, text="Close", command=win.destroy,
+                  bg="#333333", fg="white", activebackground="#555555",
+                  font=("Courier", 10), relief=tk.FLAT, pady=6,
+                  ).pack(fill=tk.X, padx=16, pady=16)
 
     def __del__(self):
         if hasattr(self, "cap"):
