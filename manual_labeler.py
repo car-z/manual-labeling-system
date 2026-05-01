@@ -19,6 +19,8 @@ AMBER_BG  = "#fff8dc"   # in-progress row background
 AMBER_FG  = "#7a5800"   # in-progress row text
 GREEN_BG  = "#e8f5e9"   # complete row background
 
+MM_W, MM_H = 150, 110   # mini-map canvas dimensions
+
 
 def _hoverable(btn, normal=BG_DARK, hover=BG_HOVER):
     btn.bind("<Enter>", lambda _: btn.config(bg=hover))
@@ -44,6 +46,22 @@ class SwallowLabeler(tk.Tk):
         self.is_playing = False
         self.play_job = None
         self.playback_speed = 1.0
+
+        # Zoom / pan state (normalized coordinates)
+        self.zoom_level = 1.0
+        self.pan_x = 0.5
+        self.pan_y = 0.5
+        self._drag_last_x = 0
+        self._drag_last_y = 0
+        self._mm_thumb_size = (MM_W, MM_H)
+        # Original frame dimensions (pixels) — set on load for pan math
+        self.frame_w = 1
+        self.frame_h = 1
+        # Visible video bounds in normalized coords (updated each frame for mini-map)
+        self._view_x0 = 0.0
+        self._view_x1 = 1.0
+        self._view_y0 = 0.0
+        self._view_y1 = 1.0
 
         self._build_styles()
         self._build_sidebar()
@@ -77,12 +95,17 @@ class SwallowLabeler(tk.Tk):
         self.video_path = path
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         # Reset session state
         self.current_frame = 0
         self.events = []
         self.swallow_events = []
         self.is_logging_swallow = False
+        self.zoom_level = 1.0
+        self.pan_x = 0.5
+        self.pan_y = 0.5
         if self.is_playing:
             self.is_playing = False
             if self.play_job:
@@ -206,8 +229,19 @@ class SwallowLabeler(tk.Tk):
         )
         self.status_indicator.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.label = tk.Label(left_frame, bg="black")
+        # Video container — holds the main label + floating mini-map
+        video_container = tk.Frame(left_frame, bg="black")
+        video_container.pack(fill=tk.BOTH, expand=True)
+
+        self.label = tk.Label(video_container, bg="black")
         self.label.pack(fill=tk.BOTH, expand=True)
+
+        self.minimap = tk.Canvas(
+            video_container, width=MM_W, height=MM_H,
+            bg="#1a1a1a", highlightthickness=2, highlightbackground="yellow",
+            cursor="crosshair",
+        )
+        self.minimap.bind("<Button-1>", self._on_minimap_click)
 
     def _bind_keys(self):
         self.bind("<Left>",      lambda _: self.step_frame(-1))
@@ -225,6 +259,12 @@ class SwallowLabeler(tk.Tk):
         self.bind("R",            lambda _: self.toggle_speed())
         self.bind("<Control-z>",  lambda _: self.undo_last_action())
         self.bind("<Command-z>",  lambda _: self.undo_last_action())
+        self.bind("c",            lambda _: self._reset_zoom())
+        self.bind("C",            lambda _: self._reset_zoom())
+
+        self.label.bind("<MouseWheel>",    self._on_zoom)
+        self.label.bind("<ButtonPress-1>", self._on_pan_start)
+        self.label.bind("<B1-Motion>",     self._on_pan_move)
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -255,10 +295,11 @@ class SwallowLabeler(tk.Tk):
 
     def _set_status(self):
         speed_tag = "" if self.playback_speed == 1.0 else f"  |  Speed: {self.playback_speed}x"
+        zoom_tag  = f"  |  Zoom: {self.zoom_level:.2f}x" if self.zoom_level > 1.0 else ""
         if self.is_logging_swallow:
-            self.status_indicator.config(text=f"● RECORDING SWALLOW{speed_tag}", fg=RED)
+            self.status_indicator.config(text=f"● RECORDING SWALLOW{speed_tag}{zoom_tag}", fg=RED)
         else:
-            self.status_indicator.config(text=f"Status: IDLE{speed_tag}", fg=FG)
+            self.status_indicator.config(text=f"Status: IDLE{speed_tag}{zoom_tag}", fg=FG)
 
     def on_event_click(self, _event):
         selected = self.tree.selection()
@@ -286,6 +327,97 @@ class SwallowLabeler(tk.Tk):
         if self._scrubber_sync:
             return
         self.current_frame = int(float(value))
+        self._show_frame()
+
+    # ── Zoom / Pan ────────────────────────────────────────────────────────────
+
+    def _on_zoom(self, event):
+        if event.delta > 0:
+            self.zoom_level = min(5.0, round(self.zoom_level + 0.1, 1))
+        else:
+            self.zoom_level = max(1.0, round(self.zoom_level - 0.1, 1))
+        self._set_status()
+        self._show_frame()
+
+    def _on_pan_start(self, event):
+        self._drag_last_x = event.x
+        self._drag_last_y = event.y
+
+    def _on_pan_move(self, event):
+        if self.zoom_level <= 1.0 or self.frame_w <= 1:
+            return
+        target_w = self.label.winfo_width()
+        target_h = self.label.winfo_height()
+        if target_w <= 1 or target_h <= 1:
+            return
+
+        dx = event.x - self._drag_last_x
+        dy = event.y - self._drag_last_y
+        self._drag_last_x = event.x
+        self._drag_last_y = event.y
+
+        # Derive the cover-mode scale that was used to render this frame so
+        # that 1 display pixel maps to exactly 1 original-video pixel of pan.
+        # crop_px = frame / zoom;  scale = max(target / crop_px)
+        crop_w_px = self.frame_w / self.zoom_level
+        crop_h_px = self.frame_h / self.zoom_level
+        scale = max(target_w / crop_w_px, target_h / crop_h_px)
+
+        # 1 display pixel = 1/scale crop pixels = zoom/(scale*frame) normalized
+        self.pan_x -= dx / (scale * self.frame_w)
+        self.pan_y -= dy / (scale * self.frame_h)
+        self.pan_x = max(0.0, min(1.0, self.pan_x))
+        self.pan_y = max(0.0, min(1.0, self.pan_y))
+        self._show_frame()
+
+    def _reset_zoom(self):
+        self.zoom_level = 1.0
+        self.pan_x = 0.5
+        self.pan_y = 0.5
+        self._set_status()
+        self._show_frame()
+
+    # ── Mini-Map ──────────────────────────────────────────────────────────────
+
+    def _update_minimap(self, full_img):
+        if self.zoom_level <= 1.0:
+            self.minimap.place_forget()
+            return
+
+        # Thumbnail of the full (unzoomed) frame
+        thumb = full_img.copy()
+        thumb.thumbnail((MM_W, MM_H), Image.Resampling.LANCZOS)
+        t_w, t_h = thumb.size
+        self._mm_thumb_size = (t_w, t_h)
+        off_x = (MM_W - t_w) // 2
+        off_y = (MM_H - t_h) // 2
+
+        self.minimap.delete("all")
+        self._mm_photo = ImageTk.PhotoImage(thumb)
+        self.minimap.create_image(off_x, off_y, anchor="nw", image=self._mm_photo)
+
+        # Viewfinder: maps the stored visible-video bounds onto the thumbnail
+        rx1 = max(off_x,        off_x + self._view_x0 * t_w)
+        ry1 = max(off_y,        off_y + self._view_y0 * t_h)
+        rx2 = min(off_x + t_w,  off_x + self._view_x1 * t_w)
+        ry2 = min(off_y + t_h,  off_y + self._view_y1 * t_h)
+        self.minimap.create_rectangle(rx1, ry1, rx2, ry2, outline="red", width=2)
+
+        # Float in the top-right corner of the video container
+        self.minimap.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=5)
+
+    def _on_minimap_click(self, event):
+        t_w, t_h = self._mm_thumb_size
+        off_x = (MM_W - t_w) // 2
+        off_y = (MM_H - t_h) // 2
+        tx = event.x - off_x
+        ty = event.y - off_y
+        if not (0 <= tx <= t_w and 0 <= ty <= t_h):
+            return
+        half_w = 0.5 / self.zoom_level
+        half_h = 0.5 / self.zoom_level
+        self.pan_x = max(half_w, min(1.0 - half_w, tx / t_w))
+        self.pan_y = max(half_h, min(1.0 - half_h, ty / t_h))
         self._show_frame()
 
     # ── Logging ───────────────────────────────────────────────────────────────
@@ -490,14 +622,55 @@ class SwallowLabeler(tk.Tk):
             return
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(frame_rgb)
+        full_img = Image.fromarray(frame_rgb)
+        img_w, img_h = full_img.size
 
-        target_w, target_h = 800, 600
-        img_w, img_h = img.size
-        ratio = min(target_w / img_w, target_h / img_h)
-        img = img.resize((int(img_w * ratio), int(img_h * ratio)), Image.Resampling.LANCZOS)
+        # ── Step 1: crop in original frame coordinates ────────────────────────
+        if self.zoom_level > 1.0:
+            crop_w = img_w / self.zoom_level
+            crop_h = img_h / self.zoom_level
+            left = max(0.0, min(img_w - crop_w, self.pan_x * img_w - crop_w / 2))
+            top  = max(0.0, min(img_h - crop_h, self.pan_y * img_h - crop_h / 2))
+            # Write back clamped pan so state stays consistent
+            self.pan_x = (left + crop_w / 2) / img_w
+            self.pan_y = (top  + crop_h / 2) / img_h
+            display_img = full_img.crop(
+                (int(left), int(top), int(left + crop_w), int(top + crop_h))
+            )
+        else:
+            display_img = full_img
 
-        self._photo = ImageTk.PhotoImage(img)
+        # ── Step 2: scale to the actual label size ────────────────────────────
+        target_w = self.label.winfo_width()
+        target_h = self.label.winfo_height()
+        if target_w <= 1: target_w = 800
+        if target_h <= 1: target_h = 600
+
+        dw, dh = display_img.size
+        if self.zoom_level > 1.0:
+            # Cover mode: expand to fill container — eliminates black bars
+            scale = max(target_w / dw, target_h / dh)
+            # Track what fraction of the crop (and therefore the video) is
+            # actually visible after the container clips the scaled image.
+            vis_frac_x = min(1.0, target_w / (scale * dw))
+            vis_frac_y = min(1.0, target_h / (scale * dh))
+            half_x = vis_frac_x / (2.0 * self.zoom_level)
+            half_y = vis_frac_y / (2.0 * self.zoom_level)
+            self._view_x0 = max(0.0, self.pan_x - half_x)
+            self._view_x1 = min(1.0, self.pan_x + half_x)
+            self._view_y0 = max(0.0, self.pan_y - half_y)
+            self._view_y1 = min(1.0, self.pan_y + half_y)
+        else:
+            # Contain mode: letterbox — shows the full video
+            scale = min(target_w / dw, target_h / dh)
+            self._view_x0, self._view_x1 = 0.0, 1.0
+            self._view_y0, self._view_y1 = 0.0, 1.0
+
+        display_img = display_img.resize(
+            (int(dw * scale), int(dh * scale)), Image.Resampling.LANCZOS
+        )
+
+        self._photo = ImageTk.PhotoImage(display_img)
         self.label.config(image=self._photo)
 
         timestamp = self.current_frame / self.fps
@@ -511,6 +684,8 @@ class SwallowLabeler(tk.Tk):
         self.scrubber.set(self.current_frame)
         self._scrubber_sync = False
 
+        self._update_minimap(full_img)
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _format_time(self, timestamp):
@@ -521,7 +696,7 @@ class SwallowLabeler(tk.Tk):
     def show_instructions(self):
         win = tk.Toplevel(self)
         win.title("Keyboard Shortcuts")
-        win.geometry("320x450")
+        win.geometry("320x530")
         win.resizable(False, False)
         win.configure(bg=BG)
 
@@ -538,6 +713,9 @@ class SwallowLabeler(tk.Tk):
             ("Delete",        "Remove selected event"),
             ("Ctrl+Z",        "Undo last mark"),
             ("R",             "Toggle speed 1x→0.5x→0.25x"),
+            ("Wheel",         "Zoom in / out (max 5x)"),
+            ("Click-Drag",    "Pan when zoomed"),
+            ("C",             "Reset zoom & center view"),
         ]
 
         frame = tk.Frame(win, bg=BG, padx=16)
