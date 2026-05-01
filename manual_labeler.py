@@ -7,19 +7,31 @@ import cv2
 from PIL import Image, ImageTk
 
 # ── Palette ───────────────────────────────────────────────────────────────────
-BG        = "#f0f0f0"   # window / panel background
-BG_DARK   = "#e1e1e1"   # button, scrubber, tick strip
-BG_HOVER  = "#c8c8c8"   # button hover
-FG        = "#111111"   # primary text
-FG_DIM    = "#555555"   # subdued text / controls button
-SEP       = "#cccccc"   # trough / divider
-GREEN     = "#228B22"   # START tick + complete row fg
-RED       = "#cc2222"   # STOP tick + recording indicator
-AMBER_BG  = "#fff8dc"   # in-progress row background
-AMBER_FG  = "#7a5800"   # in-progress row text
-GREEN_BG  = "#e8f5e9"   # complete row background
+BG        = "#f0f0f0"
+BG_DARK   = "#e1e1e1"
+BG_HOVER  = "#c8c8c8"
+FG        = "#111111"
+FG_DIM    = "#555555"
+SEP       = "#cccccc"
+GREEN     = "#228B22"
+RED       = "#cc2222"
+AMBER_BG  = "#fff8dc"
+AMBER_FG  = "#7a5800"
+GREEN_BG  = "#e8f5e9"
 
-MM_W, MM_H = 150, 110   # mini-map canvas dimensions
+MM_W, MM_H = 150, 110
+
+# Pastel background colours cycled across tag categories (dark FG assumed)
+TAG_COLORS = [
+    "#E3F2FD",  # soft blue
+    "#FCE4EC",  # soft rose
+    "#E8F5E9",  # soft green
+    "#FFF9C4",  # soft yellow
+    "#F3E5F5",  # soft lavender
+    "#FBE9E7",  # soft peach
+    "#E0F7FA",  # soft cyan
+    "#F1F8E9",  # soft lime
+]
 
 
 def _hoverable(btn, normal=BG_DARK, hover=BG_HOVER):
@@ -54,14 +66,17 @@ class SwallowLabeler(tk.Tk):
         self._drag_last_x = 0
         self._drag_last_y = 0
         self._mm_thumb_size = (MM_W, MM_H)
-        # Original frame dimensions (pixels) — set on load for pan math
         self.frame_w = 1
         self.frame_h = 1
-        # Visible video bounds in normalized coords (updated each frame for mini-map)
         self._view_x0 = 0.0
         self._view_x1 = 1.0
         self._view_y0 = 0.0
         self._view_y1 = 1.0
+
+        # Tags
+        self.tag_options = self._load_tag_options()
+        self._suppress_jump = False   # prevents frame-jump when auto-selecting a row
+        self._inline_combo = None     # floating in-cell combobox, when active
 
         self._build_styles()
         self._build_sidebar()
@@ -69,6 +84,24 @@ class SwallowLabeler(tk.Tk):
         self._bind_keys()
 
         self.after(100, lambda: self.load_video(video_path))
+
+    # ── Tag Config ────────────────────────────────────────────────────────────
+
+    def _load_tag_options(self):
+        tags_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tags.txt")
+        if os.path.exists(tags_path):
+            with open(tags_path, "r") as f:
+                tags = [line.strip() for line in f if line.strip()]
+            if tags:
+                return tags
+        msg = (
+            "tags.txt must contain at least one tag (one per line).\n\n"
+            f"Expected location: {tags_path}"
+        )
+        print(f"ERROR: {msg}")
+        messagebox.showerror("Missing Tags", msg)
+        self.destroy()
+        sys.exit(1)
 
     # ── Video Loading ─────────────────────────────────────────────────────────
 
@@ -98,7 +131,6 @@ class SwallowLabeler(tk.Tk):
         self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Reset session state
         self.current_frame = 0
         self.events = []
         self.swallow_events = []
@@ -112,7 +144,6 @@ class SwallowLabeler(tk.Tk):
                 self.after_cancel(self.play_job)
                 self.play_job = None
 
-        # Sync UI
         for item in self.tree.get_children():
             self.tree.delete(item)
         self.tick_canvas.delete("all")
@@ -143,7 +174,7 @@ class SwallowLabeler(tk.Tk):
         style.map("Treeview", background=[("selected", SEP)])
 
     def _build_sidebar(self):
-        sidebar = tk.Frame(self, bg=BG, width=240)
+        sidebar = tk.Frame(self, bg=BG, width=265)
         sidebar.pack(side=tk.RIGHT, fill=tk.Y)
         sidebar.pack_propagate(False)
 
@@ -166,26 +197,35 @@ class SwallowLabeler(tk.Tk):
 
         self.tree = ttk.Treeview(
             tree_frame,
-            columns=("num", "start", "stop", "duration"),
+            columns=("num", "start", "stop", "duration", "tag"),
             show="headings",
             yscrollcommand=scrollbar.set,
         )
         scrollbar.config(command=self.tree.yview)
 
-        self.tree.heading("num", text="#")
-        self.tree.heading("start", text="Start")
-        self.tree.heading("stop", text="Stop")
+        self.tree.heading("num",      text="#")
+        self.tree.heading("start",    text="Start")
+        self.tree.heading("stop",     text="Stop")
         self.tree.heading("duration", text="Dur.")
-        self.tree.column("num", width=25, anchor="center", stretch=False)
-        self.tree.column("start", width=62, anchor="center")
-        self.tree.column("stop", width=62, anchor="center")
-        self.tree.column("duration", width=62, anchor="center")
+        self.tree.heading("tag",      text="Tag  ✎")
+        self.tree.column("num",      width=22,  anchor="center", stretch=False)
+        self.tree.column("start",    width=50,  anchor="center", stretch=False)
+        self.tree.column("stop",     width=50,  anchor="center", stretch=False)
+        self.tree.column("duration", width=42,  anchor="center", stretch=False)
+        self.tree.column("tag",      width=68,  anchor="center", stretch=True)
 
         self.tree.tag_configure("in_progress", background=AMBER_BG, foreground=AMBER_FG)
-        self.tree.tag_configure("complete", background=GREEN_BG, foreground=GREEN)
+        # Per-category colour tags — one per line in tags.txt, cycling the palette
+        for i, opt in enumerate(self.tag_options):
+            self.tree.tag_configure(
+                f"cat_{opt}",
+                background=TAG_COLORS[i % len(TAG_COLORS)],
+                foreground=FG,
+            )
 
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.on_event_click)
+        self.tree.bind("<Button-1>",         self.on_tree_click)
 
         for text, cmd in [
             ("Delete Selected Event", self.delete_event),
@@ -203,7 +243,6 @@ class SwallowLabeler(tk.Tk):
         left_frame = tk.Frame(self, bg="black")
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Pack bottom-to-top
         self.status_label = tk.Label(
             left_frame, bg=BG_DARK, fg=FG, font=("Courier", 14), anchor="w", padx=8, pady=6
         )
@@ -229,7 +268,6 @@ class SwallowLabeler(tk.Tk):
         )
         self.status_indicator.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Video container — holds the main label + floating mini-map
         video_container = tk.Frame(left_frame, bg="black")
         video_container.pack(fill=tk.BOTH, expand=True)
 
@@ -244,23 +282,22 @@ class SwallowLabeler(tk.Tk):
         self.minimap.bind("<Button-1>", self._on_minimap_click)
 
     def _bind_keys(self):
-        self.bind("<Left>",      lambda _: self.step_frame(-1))
-        self.bind("<Right>",     lambda _: self.step_frame(1))
-        self.bind("<comma>",     lambda _: self.step_frame(-int(self.fps)))
-        self.bind("<period>",    lambda _: self.step_frame(int(self.fps)))
-        self.bind("s",           lambda _: self.log_start())
-        self.bind("S",           lambda _: self.log_start())
-        self.bind("d",           lambda _: self.log_stop())
-        self.bind("D",           lambda _: self.log_stop())
-        self.bind("<Delete>",    lambda _: self.delete_event())
+        self.bind("<Left>",       lambda _: self.step_frame(-1))
+        self.bind("<Right>",      lambda _: self.step_frame(1))
+        self.bind("<comma>",      lambda _: self.step_frame(-int(self.fps)))
+        self.bind("<period>",     lambda _: self.step_frame(int(self.fps)))
+        self.bind("s",            lambda _: self.log_start())
+        self.bind("S",            lambda _: self.log_start())
+        self.bind("d",            lambda _: self.log_stop())
+        self.bind("D",            lambda _: self.log_stop())
+        self.bind("<Delete>",     lambda _: self.delete_event())
         self.bind("<BackSpace>",  lambda _: self.delete_event())
         self.bind("<space>",      lambda _: self.toggle_play())
         self.bind("r",            lambda _: self.toggle_speed())
         self.bind("R",            lambda _: self.toggle_speed())
         self.bind("<Control-z>",  lambda _: self.undo_last_action())
         self.bind("<Command-z>",  lambda _: self.undo_last_action())
-        self.bind("c",            lambda _: self._reset_zoom())
-        self.bind("C",            lambda _: self._reset_zoom())
+        self.bind("<Escape>",     lambda _: self._reset_zoom())
 
         self.label.bind("<MouseWheel>",    self._on_zoom)
         self.label.bind("<ButtonPress-1>", self._on_pan_start)
@@ -301,7 +338,7 @@ class SwallowLabeler(tk.Tk):
         else:
             self.status_indicator.config(text=f"Status: IDLE{speed_tag}{zoom_tag}", fg=FG)
 
-    def on_event_click(self, _event):
+    def on_event_click(self, *_):
         selected = self.tree.selection()
         if not selected:
             return
@@ -309,10 +346,11 @@ class SwallowLabeler(tk.Tk):
         swallow = next((e for e in self.swallow_events if e.get("tree_id") == tree_id), None)
         if swallow is None:
             return
-        self.current_frame = swallow["start_frame"]
-        self._show_frame()
-        print(f">>> Jumping to Event #{swallow['num']} (Frame: {swallow['start_frame']})")
-        self._flash_tick(swallow["start_frame"])
+        if not self._suppress_jump:
+            self.current_frame = swallow["start_frame"]
+            self._show_frame()
+            print(f">>> Jumping to Event #{swallow['num']} (Frame: {swallow['start_frame']})")
+            self._flash_tick(swallow["start_frame"])
 
     def _flash_tick(self, frame):
         tag = f"START_{frame}"
@@ -328,6 +366,107 @@ class SwallowLabeler(tk.Tk):
             return
         self.current_frame = int(float(value))
         self._show_frame()
+
+    # ── In-Cell Tag Editor ────────────────────────────────────────────────────
+
+    def on_tree_click(self, event):
+        # Only act on clicks in the Tag column cell region
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#5":
+            return
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        swallow = next((e for e in self.swallow_events if e.get("tree_id") == item), None)
+        if swallow is None:
+            return
+
+        bbox = self.tree.bbox(item, "#5")
+        if not bbox:
+            return
+        x, y, w, h = bbox
+
+        # Dismiss any stale inline editor before creating a new one
+        self._cancel_inline_tag()
+
+        current_tag = swallow.get("tag", self.tag_options[0])
+        self._inline_item = item
+        self._inline_var  = tk.StringVar()
+
+        combo = ttk.Combobox(self.tree, textvariable=self._inline_var,
+                             state="readonly", font=("Courier", 10))
+        # Pre-populate and set value BEFORE placing so the widget is fully
+        # initialised — this prevents the blank-dropdown symptom.
+        combo["values"] = self.tag_options
+        combo.set(current_tag)
+        combo.place(x=x, y=y, width=w, height=h)
+        combo.focus_set()
+        self._inline_combo = combo
+
+        # Simulate a click on the combo arrow to open the list immediately.
+        # Capture `combo` in the closure so a rapid second click can't destroy
+        # a *different* widget than the one this callback belongs to.
+        combo.after(10, lambda: combo.event_generate("<Button-1>")
+                                if self._inline_combo is combo else None)
+
+        combo.bind("<<ComboboxSelected>>", lambda _: self._commit_inline_tag())
+        combo.bind("<Return>",             lambda _: self._commit_inline_tag())
+        combo.bind("<Escape>",             lambda _: self._cancel_inline_tag())
+        # after_idle lets <<ComboboxSelected>> win the race; the closure-
+        # captured `combo` ref ensures we never destroy a newer editor.
+        combo.bind("<FocusOut>",
+                   lambda _: self.after_idle(lambda: self._cancel_if_still(combo)))
+
+        # Stop the event reaching the Treeview class handler (row select →
+        # <<TreeviewSelect>> → unwanted frame jump).
+        return "break"
+
+    def _commit_inline_tag(self):
+        if self._inline_combo is None:
+            return
+        new_tag = self._inline_var.get()
+        item    = self._inline_item
+        self._inline_combo.destroy()
+        self._inline_combo = None
+
+        swallow = next((e for e in self.swallow_events if e.get("tree_id") == item), None)
+        if swallow is None:
+            return
+        swallow["tag"] = new_tag
+        self._refresh_tree_row(swallow)
+
+    def _cancel_inline_tag(self):
+        if self._inline_combo is None:
+            return
+        self._inline_combo.destroy()
+        self._inline_combo = None
+
+    def _cancel_if_still(self, combo_ref):
+        """Only cancel if the stored combo is still the one we were watching."""
+        if self._inline_combo is combo_ref:
+            self._cancel_inline_tag()
+
+    def _refresh_tree_row(self, swallow):
+        tid = swallow["tree_id"]
+        if swallow["stop_frame"] is None:
+            self.tree.item(tid,
+                values=(swallow["num"],
+                        self._format_time(swallow["start_time"]),
+                        "LOGGING...", "—",
+                        swallow["tag"]),
+                tags=("in_progress",),
+            )
+        else:
+            duration = swallow["stop_time"] - swallow["start_time"]
+            self.tree.item(tid,
+                values=(swallow["num"],
+                        self._format_time(swallow["start_time"]),
+                        self._format_time(swallow["stop_time"]),
+                        f"{duration:.2f}s",
+                        swallow["tag"]),
+                tags=(f"cat_{swallow['tag']}",),
+            )
 
     # ── Zoom / Pan ────────────────────────────────────────────────────────────
 
@@ -356,14 +495,10 @@ class SwallowLabeler(tk.Tk):
         self._drag_last_x = event.x
         self._drag_last_y = event.y
 
-        # Derive the cover-mode scale that was used to render this frame so
-        # that 1 display pixel maps to exactly 1 original-video pixel of pan.
-        # crop_px = frame / zoom;  scale = max(target / crop_px)
         crop_w_px = self.frame_w / self.zoom_level
         crop_h_px = self.frame_h / self.zoom_level
         scale = max(target_w / crop_w_px, target_h / crop_h_px)
 
-        # 1 display pixel = 1/scale crop pixels = zoom/(scale*frame) normalized
         self.pan_x -= dx / (scale * self.frame_w)
         self.pan_y -= dy / (scale * self.frame_h)
         self.pan_x = max(0.0, min(1.0, self.pan_x))
@@ -384,7 +519,6 @@ class SwallowLabeler(tk.Tk):
             self.minimap.place_forget()
             return
 
-        # Thumbnail of the full (unzoomed) frame
         thumb = full_img.copy()
         thumb.thumbnail((MM_W, MM_H), Image.Resampling.LANCZOS)
         t_w, t_h = thumb.size
@@ -396,14 +530,12 @@ class SwallowLabeler(tk.Tk):
         self._mm_photo = ImageTk.PhotoImage(thumb)
         self.minimap.create_image(off_x, off_y, anchor="nw", image=self._mm_photo)
 
-        # Viewfinder: maps the stored visible-video bounds onto the thumbnail
-        rx1 = max(off_x,        off_x + self._view_x0 * t_w)
-        ry1 = max(off_y,        off_y + self._view_y0 * t_h)
-        rx2 = min(off_x + t_w,  off_x + self._view_x1 * t_w)
-        ry2 = min(off_y + t_h,  off_y + self._view_y1 * t_h)
+        rx1 = max(off_x,       off_x + self._view_x0 * t_w)
+        ry1 = max(off_y,       off_y + self._view_y0 * t_h)
+        rx2 = min(off_x + t_w, off_x + self._view_x1 * t_w)
+        ry2 = min(off_y + t_h, off_y + self._view_y1 * t_h)
         self.minimap.create_rectangle(rx1, ry1, rx2, ry2, outline="red", width=2)
 
-        # Float in the top-right corner of the video container
         self.minimap.place(relx=1.0, rely=0.0, anchor="ne", x=-5, y=5)
 
     def _on_minimap_click(self, event):
@@ -429,19 +561,21 @@ class SwallowLabeler(tk.Tk):
         self.is_logging_swallow = True
         timestamp = self.current_frame / self.fps
         event_num = len(self.swallow_events) + 1
+        default_tag = self.tag_options[0] if self.tag_options else "Unlabeled"
 
         swallow = {
-            "num": event_num,
+            "num":         event_num,
             "start_frame": self.current_frame,
-            "start_time": timestamp,
-            "stop_frame": None,
-            "stop_time": None,
+            "start_time":  timestamp,
+            "stop_frame":  None,
+            "stop_time":   None,
+            "tag":         default_tag,
         }
         self.swallow_events.append(swallow)
         self.events.append({"frame": self.current_frame, "time": timestamp, "type": "START"})
 
         tree_id = self.tree.insert("", tk.END,
-            values=(event_num, self._format_time(timestamp), "LOGGING...", "—"),
+            values=(event_num, self._format_time(timestamp), "LOGGING...", "—", default_tag),
             tags=("in_progress",),
         )
         swallow["tree_id"] = tree_id
@@ -465,18 +599,11 @@ class SwallowLabeler(tk.Tk):
 
         swallow = self.swallow_events[-1]
         swallow["stop_frame"] = self.current_frame
-        swallow["stop_time"] = timestamp
+        swallow["stop_time"]  = timestamp
         duration = timestamp - swallow["start_time"]
 
-        self.tree.item(swallow["tree_id"],
-            values=(swallow["num"],
-                    self._format_time(swallow["start_time"]),
-                    self._format_time(timestamp),
-                    f"{duration:.2f}s"),
-            tags=("complete",),
-        )
+        self._refresh_tree_row(swallow)
         self.tree.see(swallow["tree_id"])
-
         self.events.append({"frame": self.current_frame, "time": timestamp, "type": "STOP"})
 
         print(f">>> [STOP]  Frame {self.current_frame} | Time: {timestamp:.3f}s")
@@ -487,6 +614,14 @@ class SwallowLabeler(tk.Tk):
         self.draw_tick(self.current_frame, "STOP")
         self._set_status()
 
+        # Highlight the completed row without jumping to its start frame.
+        # Reset the flag via after_idle so it stays True for the full dispatch
+        # of the <<TreeviewSelect>> virtual event (which Tk may queue rather
+        # than fire synchronously inside selection_set).
+        self._suppress_jump = True
+        self.tree.selection_set(swallow["tree_id"])
+        self.after_idle(lambda: setattr(self, '_suppress_jump', False))
+
     def undo_last_action(self):
         if not self.swallow_events:
             print(">>> Nothing to undo.")
@@ -495,25 +630,19 @@ class SwallowLabeler(tk.Tk):
         swallow = self.swallow_events[-1]
 
         if swallow["stop_frame"] is None:
-            # Open event — remove it entirely
             self.swallow_events.pop()
             self.tree.delete(swallow["tree_id"])
             self.is_logging_swallow = False
             print(f">>> Undo: removed open Event #{swallow['num']}.")
         else:
-            # Closed event — re-open it: clear stop, restore in-progress state
             swallow["stop_frame"] = None
-            swallow["stop_time"] = None
+            swallow["stop_time"]  = None
             self.is_logging_swallow = True
-            self.tree.item(swallow["tree_id"],
-                values=(swallow["num"], self._format_time(swallow["start_time"]), "LOGGING...", "—"),
-                tags=("in_progress",),
-            )
+            self._refresh_tree_row(swallow)
             self.tree.see(swallow["tree_id"])
             self._blink()
             print(f">>> Undo: re-opened Event #{swallow['num']} — waiting for STOP.")
 
-        # Rebuild flat event list and sync timeline
         self.events = []
         for s in self.swallow_events:
             self.events.append({"frame": s["start_frame"], "time": s["start_time"], "type": "START"})
@@ -571,7 +700,8 @@ class SwallowLabeler(tk.Tk):
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Event_ID", "Start_Frame", "Stop_Frame",
-                             "Start_Time_Sec", "Stop_Time_Sec", "Duration_Sec", "Video_Source"])
+                             "Start_Time_Sec", "Stop_Time_Sec", "Duration_Sec",
+                             "Tag", "Video_Source"])
             source = os.path.basename(self.video_path)
             for s in completed:
                 duration = (s["stop_frame"] - s["start_frame"]) / self.fps
@@ -580,8 +710,9 @@ class SwallowLabeler(tk.Tk):
                     s["start_frame"],
                     s["stop_frame"],
                     round(s["start_time"], 4),
-                    round(s["stop_time"], 4),
-                    round(duration, 4),
+                    round(s["stop_time"],  4),
+                    round(duration,        4),
+                    s.get("tag", ""),
                     source,
                 ])
 
@@ -625,13 +756,11 @@ class SwallowLabeler(tk.Tk):
         full_img = Image.fromarray(frame_rgb)
         img_w, img_h = full_img.size
 
-        # ── Step 1: crop in original frame coordinates ────────────────────────
         if self.zoom_level > 1.0:
             crop_w = img_w / self.zoom_level
             crop_h = img_h / self.zoom_level
             left = max(0.0, min(img_w - crop_w, self.pan_x * img_w - crop_w / 2))
             top  = max(0.0, min(img_h - crop_h, self.pan_y * img_h - crop_h / 2))
-            # Write back clamped pan so state stays consistent
             self.pan_x = (left + crop_w / 2) / img_w
             self.pan_y = (top  + crop_h / 2) / img_h
             display_img = full_img.crop(
@@ -640,7 +769,6 @@ class SwallowLabeler(tk.Tk):
         else:
             display_img = full_img
 
-        # ── Step 2: scale to the actual label size ────────────────────────────
         target_w = self.label.winfo_width()
         target_h = self.label.winfo_height()
         if target_w <= 1: target_w = 800
@@ -648,10 +776,7 @@ class SwallowLabeler(tk.Tk):
 
         dw, dh = display_img.size
         if self.zoom_level > 1.0:
-            # Cover mode: expand to fill container — eliminates black bars
             scale = max(target_w / dw, target_h / dh)
-            # Track what fraction of the crop (and therefore the video) is
-            # actually visible after the container clips the scaled image.
             vis_frac_x = min(1.0, target_w / (scale * dw))
             vis_frac_y = min(1.0, target_h / (scale * dh))
             half_x = vis_frac_x / (2.0 * self.zoom_level)
@@ -661,7 +786,6 @@ class SwallowLabeler(tk.Tk):
             self._view_y0 = max(0.0, self.pan_y - half_y)
             self._view_y1 = min(1.0, self.pan_y + half_y)
         else:
-            # Contain mode: letterbox — shows the full video
             scale = min(target_w / dw, target_h / dh)
             self._view_x0, self._view_x1 = 0.0, 1.0
             self._view_y0, self._view_y1 = 0.0, 1.0
@@ -696,7 +820,7 @@ class SwallowLabeler(tk.Tk):
     def show_instructions(self):
         win = tk.Toplevel(self)
         win.title("Keyboard Shortcuts")
-        win.geometry("320x530")
+        win.geometry("320x540")
         win.resizable(False, False)
         win.configure(bg=BG)
 
@@ -709,13 +833,14 @@ class SwallowLabeler(tk.Tk):
             (".  /  ,",       "Skip ±1 second"),
             ("S",             "Mark START of swallow"),
             ("D",             "Mark STOP of swallow"),
-            ("Click sidebar", "Jump to event"),
+            ("Click Tag cell","Edit event type in-place"),
+            ("Click sidebar", "Jump to event start"),
             ("Delete",        "Remove selected event"),
             ("Ctrl+Z",        "Undo last mark"),
             ("R",             "Toggle speed 1x→0.5x→0.25x"),
             ("Wheel",         "Zoom in / out (max 5x)"),
             ("Click-Drag",    "Pan when zoomed"),
-            ("C",             "Reset zoom & center view"),
+            ("Escape",        "Reset zoom & center view"),
         ]
 
         frame = tk.Frame(win, bg=BG, padx=16)

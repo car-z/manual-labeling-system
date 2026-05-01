@@ -1,3 +1,5 @@
-Event_ID,Start_Frame,Stop_Frame,Start_Time_Sec,Stop_Time_Sec,Duration_Sec,Video_Source
-1,88,92,2.9338,3.0671,0.1334,test.MOV
-2,98,103,3.2672,3.4339,0.1667,test.MOV
+Event_ID,Start_Frame,Stop_Frame,Start_Time_Sec,Stop_Time_Sec,Duration_Sec,Tag,Video_Source
+1,31,43,1.0335,1.4336,0.4001,water,test.MOV
+2,114,121,3.8006,4.034,0.2334,food,test.MOV
+3,131,189,4.3673,6.301,1.9336,water,test.MOV
+4,254,263,8.468,8.768,0.3,water,test.MOV
