@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
@@ -57,7 +58,10 @@ class SwallowLabeler(tk.Tk):
         self._scrubber_sync = False
         self.is_playing = False
         self.play_job = None
+        self.play_btn = None          # transport panel center button
         self.playback_speed = 1.0
+        self.playback_start_time = 0.0
+        self.playback_start_frame = 0
 
         # Zoom / pan state (normalized coordinates)
         self.zoom_level = 1.0
@@ -261,6 +265,48 @@ class SwallowLabeler(tk.Tk):
         )
         self.scrubber.pack(side=tk.BOTTOM, fill=tk.X)
 
+        # ── Transport control panel ────────────────────────────────────────────
+        ctrl = tk.Frame(left_frame, bg=BG_DARK, pady=2)
+        ctrl.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Inner frame so the button cluster sits centered rather than left-flush
+        btn_row = tk.Frame(ctrl, bg=BG_DARK)
+        btn_row.pack(expand=True)
+
+        btn_cfg = dict(bg=BG_DARK, fg=FG,
+                       activebackground=BG_DARK, activeforeground=FG,
+                       font=("Courier", 11),
+                       relief=tk.FLAT, bd=0, highlightthickness=0,
+                       pady=2)
+
+        btn_prev_1s = tk.Button(btn_row, text="⏪ -1s",
+                                command=lambda: self.step_frame(-int(self.fps)), **btn_cfg)
+        btn_prev_1f = tk.Button(btn_row, text="◀ -1f",
+                                command=lambda: self.step_frame(-1), **btn_cfg)
+
+        self.play_btn = tk.Button(btn_row, text="▶ Play",
+                                  command=self.toggle_play,
+                                  bg=BG_DARK, fg=FG,
+                                  activebackground=BG_DARK, activeforeground=FG,
+                                  font=("Courier", 11, "bold"),
+                                  relief=tk.FLAT, bd=0, highlightthickness=0,
+                                  pady=2)
+
+        btn_next_1f = tk.Button(btn_row, text="+1f ▶",
+                                command=lambda: self.step_frame(1), **btn_cfg)
+        btn_next_1s = tk.Button(btn_row, text="+1s ⏩",
+                                command=lambda: self.step_frame(int(self.fps)), **btn_cfg)
+
+        for btn in (btn_prev_1s, btn_prev_1f, self.play_btn, btn_next_1f, btn_next_1s):
+            _hoverable(btn, normal=BG_DARK, hover=BG_HOVER)
+
+        btn_prev_1s.pack(side=tk.LEFT, padx=10, pady=2)
+        btn_prev_1f.pack(side=tk.LEFT, padx=10, pady=2)
+        self.play_btn.pack(side=tk.LEFT, padx=15, pady=2)
+        btn_next_1f.pack(side=tk.LEFT, padx=10, pady=2)
+        btn_next_1s.pack(side=tk.LEFT, padx=10, pady=2)
+        # ── End transport panel ───────────────────────────────────────────────
+
         self.status_indicator = tk.Label(
             left_frame, text="Status: IDLE",
             bg=BG_DARK, fg=FG, font=("Courier", 14, "bold"),
@@ -308,25 +354,53 @@ class SwallowLabeler(tk.Tk):
     def toggle_play(self):
         self.is_playing = not self.is_playing
         if self.is_playing:
+            self.playback_start_time  = time.time()
+            self.playback_start_frame = self.current_frame
+            self._sync_play_btn(playing=True)
             self.play_loop()
-        elif self.play_job is not None:
-            self.after_cancel(self.play_job)
-            self.play_job = None
+        else:
+            if self.play_job is not None:
+                self.after_cancel(self.play_job)
+                self.play_job = None
+            self._sync_play_btn(playing=False)
+
+    def _sync_play_btn(self, playing):
+        if self.play_btn is None:
+            return
+        if playing:
+            self.play_btn.config(text="⏸ Pause", fg=GREEN, activeforeground=GREEN)
+        else:
+            self.play_btn.config(text="▶ Play", fg=FG, activeforeground=FG)
 
     def play_loop(self):
         if not self.is_playing:
             return
-        if self.current_frame >= self.total_frames - 1:
+
+        elapsed = (time.time() - self.playback_start_time) * self.playback_speed
+        target_frame = int(self.playback_start_frame + elapsed * self.fps)
+        target_frame = min(target_frame, self.total_frames - 1)
+
+        if target_frame >= self.total_frames - 1:
+            self.current_frame = self.total_frames - 1
+            self._show_frame()
             self.is_playing = False
             self.play_job = None
+            self._sync_play_btn(playing=False)
             return
-        self.current_frame += 1
-        self._show_frame()
-        self.play_job = self.after(int((1000 / self.fps) / self.playback_speed), self.play_loop)
+
+        if target_frame != self.current_frame:
+            self.current_frame = target_frame
+            self._show_frame()
+
+        self.play_job = self.after(5, self.play_loop)
 
     def toggle_speed(self):
         speeds = [1.0, 0.5, 0.25]
         self.playback_speed = speeds[(speeds.index(self.playback_speed) + 1) % len(speeds)]
+        # Re-anchor the wall-clock baseline so the new speed takes effect immediately
+        if self.is_playing:
+            self.playback_start_time  = time.time()
+            self.playback_start_frame = self.current_frame
         print(f">>> Playback speed set to {self.playback_speed}x")
         self._set_status()
 
@@ -820,7 +894,7 @@ class SwallowLabeler(tk.Tk):
     def show_instructions(self):
         win = tk.Toplevel(self)
         win.title("Keyboard Shortcuts")
-        win.geometry("320x540")
+        win.geometry("360x640")
         win.resizable(False, False)
         win.configure(bg=BG)
 
@@ -829,8 +903,11 @@ class SwallowLabeler(tk.Tk):
 
         controls = [
             ("Space",         "Play / Pause"),
-            ("→  /  ←",       "Step ±1 frame"),
-            (".  /  ,",       "Skip ±1 second"),
+            ("▶ Play button", "Play / Pause (on-screen)"),
+            ("⏪ / ⏩",        "Skip ±1 second (on-screen)"),
+            ("◀ / ▶",         "Step ±1 frame (on-screen)"),
+            ("→  /  ←",       "Step ±1 frame (keyboard)"),
+            (".  /  ,",       "Skip ±1 second (keyboard)"),
             ("S",             "Mark START of swallow"),
             ("D",             "Mark STOP of swallow"),
             ("Click Tag cell","Edit event type in-place"),
