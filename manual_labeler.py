@@ -59,7 +59,6 @@ class SwallowLabeler(tk.Tk):
         self.is_playing = False
         self.play_job = None
         self.play_btn = None          # transport panel center button
-        self.playback_speed = 1.0
         self.playback_start_time = 0.0
         self.playback_start_frame = 0
 
@@ -339,8 +338,6 @@ class SwallowLabeler(tk.Tk):
         self.bind("<Delete>",     lambda _: self.delete_event())
         self.bind("<BackSpace>",  lambda _: self.delete_event())
         self.bind("<space>",      lambda _: self.toggle_play())
-        self.bind("r",            lambda _: self.toggle_speed())
-        self.bind("R",            lambda _: self.toggle_speed())
         self.bind("<Control-z>",  lambda _: self.undo_last_action())
         self.bind("<Command-z>",  lambda _: self.undo_last_action())
         self.bind("<Escape>",     lambda _: self._reset_zoom())
@@ -376,7 +373,7 @@ class SwallowLabeler(tk.Tk):
         if not self.is_playing:
             return
 
-        elapsed = (time.time() - self.playback_start_time) * self.playback_speed
+        elapsed = time.time() - self.playback_start_time
         target_frame = int(self.playback_start_frame + elapsed * self.fps)
         target_frame = min(target_frame, self.total_frames - 1)
 
@@ -394,23 +391,12 @@ class SwallowLabeler(tk.Tk):
 
         self.play_job = self.after(5, self.play_loop)
 
-    def toggle_speed(self):
-        speeds = [1.0, 0.5, 0.25]
-        self.playback_speed = speeds[(speeds.index(self.playback_speed) + 1) % len(speeds)]
-        # Re-anchor the wall-clock baseline so the new speed takes effect immediately
-        if self.is_playing:
-            self.playback_start_time  = time.time()
-            self.playback_start_frame = self.current_frame
-        print(f">>> Playback speed set to {self.playback_speed}x")
-        self._set_status()
-
     def _set_status(self):
-        speed_tag = "" if self.playback_speed == 1.0 else f"  |  Speed: {self.playback_speed}x"
-        zoom_tag  = f"  |  Zoom: {self.zoom_level:.2f}x" if self.zoom_level > 1.0 else ""
+        zoom_tag = f"  |  Zoom: {self.zoom_level:.2f}x" if self.zoom_level > 1.0 else ""
         if self.is_logging_swallow:
-            self.status_indicator.config(text=f"● RECORDING SWALLOW{speed_tag}{zoom_tag}", fg=RED)
+            self.status_indicator.config(text=f"● RECORDING SWALLOW{zoom_tag}", fg=RED)
         else:
-            self.status_indicator.config(text=f"Status: IDLE{speed_tag}{zoom_tag}", fg=FG)
+            self.status_indicator.config(text=f"Status: IDLE{zoom_tag}", fg=FG)
 
     def on_event_click(self, *_):
         selected = self.tree.selection()
@@ -914,7 +900,6 @@ class SwallowLabeler(tk.Tk):
             ("Click sidebar", "Jump to event start"),
             ("Delete",        "Remove selected event"),
             ("Ctrl+Z",        "Undo last mark"),
-            ("R",             "Toggle speed 1x→0.5x→0.25x"),
             ("Wheel",         "Zoom in / out (max 5x)"),
             ("Click-Drag",    "Pan when zoomed"),
             ("Escape",        "Reset zoom & center view"),

@@ -49,7 +49,6 @@ At least one tag is required — the app will show an error and exit if the file
 | `S` | Mark START of swallow |
 | `D` | Mark STOP of swallow |
 | `Ctrl+Z` | Undo last mark (re-opens a finished event) |
-| `R` | Toggle playback speed (1x → 0.5x → 0.25x) |
 | `Delete` / `Backspace` | Remove selected event |
 | `Escape` | Reset zoom and re-center view |
 | Mouse wheel | Zoom in / out (up to 5x) |
@@ -90,10 +89,6 @@ Located directly above the scrubber:
 - Click and drag to pan when zoomed.
 - A **mini-map** appears in the top-right corner of the video at zoom > 1x, showing your current viewport as a red rectangle. Click anywhere on the mini-map to jump the view.
 - Press **Escape** to reset zoom and re-center.
-
-## Playback
-
-Playback uses wall-clock time to derive the target frame on each tick, so it stays accurate regardless of system load. The speed toggle (`R`) recalibrates the baseline immediately, so slow-motion takes effect without drift.
 
 ## Output
 
