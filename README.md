@@ -2,6 +2,9 @@
 
 A desktop tool for manually annotating swallow events in video recordings.
 
+## Video Tutorial
+https://drive.google.com/file/d/17mh3YVx6ckWsswSk26-hhjuddndQVM-y/view?usp=sharing 
+
 ## Requirements
 
 Python 3.9+ with the following packages:
