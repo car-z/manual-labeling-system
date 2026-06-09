@@ -3,6 +3,7 @@ import sys
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import bisect
 import csv
 import cv2
 from PIL import Image, ImageTk
@@ -81,6 +82,10 @@ class SwallowLabeler(tk.Tk):
         self._suppress_jump = False   # prevents frame-jump when auto-selecting a row
         self._inline_combo = None     # floating in-cell combobox, when active
 
+        # CSV data
+        self.frame_timestamps = []
+        self.event_label_frames = []
+
         self._build_styles()
         self._build_sidebar()
         self._build_main_area()
@@ -105,6 +110,61 @@ class SwallowLabeler(tk.Tk):
         messagebox.showerror("Missing Tags", msg)
         self.destroy()
         sys.exit(1)
+
+    # ── CSV Loading ───────────────────────────────────────────────────────────
+
+    def _load_required_csvs(self):
+        ts_path = filedialog.askopenfilename(
+            title="Open Frame Timestamps CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not ts_path:
+            messagebox.showwarning("Required", "Frame timestamps CSV is required.")
+            return False
+        self._parse_frame_timestamps(ts_path)
+
+        ev_path = filedialog.askopenfilename(
+            title="Open Event Label CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not ev_path:
+            messagebox.showwarning("Required", "Event label CSV is required.")
+            return False
+        self._parse_event_labels(ev_path)
+        self.redraw_ticks()
+        return True
+
+    def _parse_frame_timestamps(self, path):
+        self.frame_timestamps = []
+        with open(path, "r") as f:
+            reader = csv.reader(f)
+            next(reader)
+            for row in reader:
+                if len(row) >= 2:
+                    self.frame_timestamps.append(float(row[1]))
+
+    def _parse_event_labels(self, path):
+        self.event_label_frames = []
+        if not self.frame_timestamps:
+            return
+        with open(path, "r") as f:
+            reader = csv.reader(f)
+            next(reader)
+            for row in reader:
+                if len(row) >= 2:
+                    host_time = float(row[1])
+                    frame = self._find_closest_frame(host_time)
+                    self.event_label_frames.append(frame)
+
+    def _find_closest_frame(self, timestamp):
+        idx = bisect.bisect_left(self.frame_timestamps, timestamp)
+        if idx == 0:
+            return 0
+        if idx >= len(self.frame_timestamps):
+            return len(self.frame_timestamps) - 1
+        if timestamp - self.frame_timestamps[idx - 1] <= self.frame_timestamps[idx] - timestamp:
+            return idx - 1
+        return idx
 
     # ── Video Loading ─────────────────────────────────────────────────────────
 
@@ -138,6 +198,8 @@ class SwallowLabeler(tk.Tk):
         self.events = []
         self.swallow_events = []
         self.is_logging_swallow = False
+        self.frame_timestamps = []
+        self.event_label_frames = []
         self.zoom_level = 1.0
         self.pan_x = 0.5
         self.pan_y = 0.5
@@ -159,6 +221,12 @@ class SwallowLabeler(tk.Tk):
 
         print(f">>> Loaded {os.path.basename(path)} at {self.fps:.3f} FPS. "
               f"1 frame = {1 / self.fps:.4f} seconds.")
+
+        if not self._load_required_csvs():
+            self.cap.release()
+            self.cap = None
+            self.video_path = None
+            return
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
@@ -760,18 +828,20 @@ class SwallowLabeler(tk.Tk):
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Event_ID", "Start_Frame", "Stop_Frame",
-                             "Start_Time_Sec", "Stop_Time_Sec", "Duration_Sec",
+                             "Start_Host_Time", "Stop_Host_Time", "Duration_Sec",
                              "Tag", "Video_Source"])
             source = os.path.basename(self.video_path)
             for s in completed:
-                duration = (s["stop_frame"] - s["start_frame"]) / self.fps
+                start_host = self.frame_timestamps[s["start_frame"]] if s["start_frame"] < len(self.frame_timestamps) else s["start_time"]
+                stop_host  = self.frame_timestamps[s["stop_frame"]]  if s["stop_frame"]  < len(self.frame_timestamps) else s["stop_time"]
+                duration = stop_host - start_host
                 writer.writerow([
                     s["num"],
                     s["start_frame"],
                     s["stop_frame"],
-                    round(s["start_time"], 4),
-                    round(s["stop_time"],  4),
-                    round(duration,        4),
+                    round(start_host, 4),
+                    round(stop_host,  4),
+                    round(duration,   4),
                     s.get("tag", ""),
                     source,
                 ])
@@ -798,8 +868,18 @@ class SwallowLabeler(tk.Tk):
 
     def redraw_ticks(self):
         self.tick_canvas.delete("all")
+        for frame in self.event_label_frames:
+            self._draw_event_label_tick(frame)
         for event in self.events:
             self.draw_tick(event["frame"], event["type"])
+
+    def _draw_event_label_tick(self, frame):
+        canvas_w = self.tick_canvas.winfo_width()
+        if canvas_w <= 1:
+            return
+        x = (frame / max(self.total_frames - 1, 1)) * canvas_w
+        self.tick_canvas.create_line(x, 0, x, 10, fill="#2196F3", width=2,
+                                     tags="event_label")
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
